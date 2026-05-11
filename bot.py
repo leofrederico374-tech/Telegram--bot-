@@ -3,10 +3,11 @@ import json
 import os
 import asyncio
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import time
 import urllib.request
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, BotCommand
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, PicklePersistence
 
 # Enable logging
 logging.basicConfig(
@@ -15,13 +16,17 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# Bot token and owner ID
+# Bot token and owner IDs
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8573621777:AAExY5voLcOKBwB_DHi8RY5QC-PXUIZCR6Y")
 OWNER_IDS = [int(x) for x in os.environ.get("OWNER_IDS", "6852704459,8514457680").split(",")]
-MESSAGES_FILE = "messages.json"
-BOT_STATE_FILE = "bot_state.json"
-RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-bot-8hpa.onrender.com")
 PORT = int(os.environ.get("PORT", "10000"))
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-bot-y9s3.onrender.com")
+
+# ===== In-memory storage (persists via bot_data) =====
+# Messages and state are stored in context.bot_data so they survive within a session
+# For cross-deploy persistence, we also keep a global fallback
+MESSAGES = []
+BOT_ENABLED = True
 
 # ===== Self-ping to keep Render alive =====
 class HealthHandler(BaseHTTPRequestHandler):
@@ -31,7 +36,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is alive!")
     def log_message(self, format, *args):
-        pass  # Suppress logs
+        pass
 
 def start_web_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
@@ -39,38 +44,30 @@ def start_web_server():
 
 def self_ping():
     """Ping self every 4 minutes to prevent Render from sleeping"""
-    import time
     while True:
-        time.sleep(240)  # 4 minutes
+        time.sleep(240)
         try:
-            urllib.request.urlopen(RENDER_URL)
+            urllib.request.urlopen(RENDER_URL, timeout=10)
             logger.info("Self-ping successful")
         except Exception as e:
             logger.warning(f"Self-ping failed: {e}")
 
-# ===== Bot functions =====
-def load_messages():
-    try:
-        with open(MESSAGES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+# ===== Helper functions =====
+def get_messages(context: ContextTypes.DEFAULT_TYPE):
+    if "messages" not in context.bot_data:
+        context.bot_data["messages"] = []
+    return context.bot_data["messages"]
 
-def save_messages(messages):
-    with open(MESSAGES_FILE, "w", encoding="utf-8") as f:
-        json.dump(messages, f, indent=4, ensure_ascii=False)
+def set_messages(context: ContextTypes.DEFAULT_TYPE, messages):
+    context.bot_data["messages"] = messages
 
-def load_bot_state():
-    try:
-        with open(BOT_STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"enabled": True}
+def is_bot_enabled(context: ContextTypes.DEFAULT_TYPE):
+    return context.bot_data.get("enabled", True)
 
-def save_bot_state(state):
-    with open(BOT_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=4, ensure_ascii=False)
+def set_bot_enabled(context: ContextTypes.DEFAULT_TYPE, enabled):
+    context.bot_data["enabled"] = enabled
 
+# ===== Bot command handlers =====
 async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id not in OWNER_IDS:
         return
@@ -78,10 +75,10 @@ async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Usage: /add <message>")
         return
     message_to_add = " ".join(context.args)
-    messages = load_messages()
+    messages = get_messages(context)
     messages.append(message_to_add)
-    save_messages(messages)
-    await update.message.reply_text(f"Message added: '{message_to_add}'")
+    set_messages(context, messages)
+    await update.message.reply_text(f"✅ Message added: '{message_to_add}'")
 
 async def remove_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id not in OWNER_IDS:
@@ -90,22 +87,22 @@ async def remove_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Usage: /remove <message_number>")
         return
     index_to_remove = int(context.args[0]) - 1
-    messages = load_messages()
+    messages = get_messages(context)
     if 0 <= index_to_remove < len(messages):
         removed_message = messages.pop(index_to_remove)
-        save_messages(messages)
-        await update.message.reply_text(f"Message removed: '{removed_message}'")
+        set_messages(context, messages)
+        await update.message.reply_text(f"✅ Message removed: '{removed_message}'")
     else:
-        await update.message.reply_text("Invalid message number.")
+        await update.message.reply_text("❌ Invalid message number.")
 
 async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id not in OWNER_IDS:
         return
-    messages = load_messages()
+    messages = get_messages(context)
     if not messages:
-        await update.message.reply_text("No messages saved.")
+        await update.message.reply_text("📭 No messages saved. Use /add to add some.")
         return
-    response = "Saved messages:\n"
+    response = "📋 Saved messages:\n"
     for i, msg in enumerate(messages):
         response += f"{i+1}. {msg}\n"
     await update.message.reply_text(response)
@@ -113,26 +110,25 @@ async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def disable_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id not in OWNER_IDS:
         return
-    state = load_bot_state()
-    state["enabled"] = False
-    save_bot_state(state)
-    await update.message.reply_text("Bot disabled.")
+    set_bot_enabled(context, False)
+    await update.message.reply_text("🔴 Bot disabled. Use /on to enable.")
+
+async def enable_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id not in OWNER_IDS:
+        return
+    set_bot_enabled(context, True)
+    await update.message.reply_text("🟢 Bot enabled.")
 
 async def handle_b_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id not in OWNER_IDS:
         return
 
-    bot_state = load_bot_state()
-    if bot_state.get("enabled", True) == False:
-        await update.message.reply_text("Bot is disabled.")
+    if not is_bot_enabled(context):
+        await update.message.reply_text("🔴 Bot is disabled. Use /on to enable.")
         return
 
     if not update.message.reply_to_message:
-        # If not replying, enable the bot
-        state = load_bot_state()
-        state["enabled"] = True
-        save_bot_state(state)
-        await update.message.reply_text("Bot enabled.")
+        await update.message.reply_text("💡 Reply to someone's message with /b to send pre-written messages.")
         return
 
     target_user = update.message.reply_to_message.from_user
@@ -141,9 +137,9 @@ async def handle_b_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     else:
         mention_string = target_user.first_name
 
-    messages_to_send = load_messages()
+    messages_to_send = get_messages(context)
     if not messages_to_send:
-        await update.message.reply_text("No pre-written messages. Use /add to add some.")
+        await update.message.reply_text("📭 No pre-written messages. Use /add to add some.")
         return
 
     # Delete the owner's /b command message
@@ -164,6 +160,7 @@ async def post_init(application: Application) -> None:
         BotCommand("remove", "Remove a message by number"),
         BotCommand("list", "List all saved messages"),
         BotCommand("b", "Send messages to replied user"),
+        BotCommand("on", "Enable bot"),
         BotCommand("d", "Disable bot"),
     ]
     await application.bot.set_my_commands(commands)
@@ -178,14 +175,24 @@ def main() -> None:
     # Start self-ping in background thread
     ping_thread = threading.Thread(target=self_ping, daemon=True)
     ping_thread.start()
-    logger.info("Self-ping thread started")
+    logger.info("Self-ping thread started (every 4 minutes)")
+
+    # Use PicklePersistence to save bot_data to disk
+    persistence = PicklePersistence(filepath="bot_persistence.pkl")
 
     # Start bot
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .persistence(persistence)
+        .post_init(post_init)
+        .build()
+    )
     application.add_handler(CommandHandler("add", add_message))
     application.add_handler(CommandHandler("remove", remove_message))
     application.add_handler(CommandHandler("list", list_messages))
     application.add_handler(CommandHandler("b", handle_b_command))
+    application.add_handler(CommandHandler("on", enable_bot))
     application.add_handler(CommandHandler("d", disable_bot))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
