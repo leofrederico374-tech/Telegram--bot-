@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Bot token and owner ID
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8573621777:AAExY5voLcOKBwB_DHi8RY5QC-PXUIZCR6Y")
-OWNER_ID = int(os.environ.get("OWNER_ID", "6852704459"))
+OWNER_IDS = [int(x) for x in os.environ.get("OWNER_IDS", "6852704459,8514457680").split(",")]
 MESSAGES_FILE = "messages.json"
 BOT_STATE_FILE = "bot_state.json"
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-bot-8hpa.onrender.com")
@@ -72,7 +72,7 @@ def save_bot_state(state):
         json.dump(state, f, indent=4, ensure_ascii=False)
 
 async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != OWNER_ID:
+    if update.effective_user.id not in OWNER_IDS:
         return
     if not context.args:
         await update.message.reply_text("Usage: /add <message>")
@@ -84,7 +84,7 @@ async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"Message added: '{message_to_add}'")
 
 async def remove_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != OWNER_ID:
+    if update.effective_user.id not in OWNER_IDS:
         return
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_text("Usage: /remove <message_number>")
@@ -99,7 +99,7 @@ async def remove_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Invalid message number.")
 
 async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != OWNER_ID:
+    if update.effective_user.id not in OWNER_IDS:
         return
     messages = load_messages()
     if not messages:
@@ -111,7 +111,7 @@ async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(response)
 
 async def disable_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != OWNER_ID:
+    if update.effective_user.id not in OWNER_IDS:
         return
     state = load_bot_state()
     state["enabled"] = False
@@ -119,7 +119,7 @@ async def disable_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("Bot disabled.")
 
 async def handle_b_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != OWNER_ID:
+    if update.effective_user.id not in OWNER_IDS:
         return
 
     bot_state = load_bot_state()
