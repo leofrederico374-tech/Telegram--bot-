@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Bot token and owner IDs
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8573621777:AAExY5voLcOKBwB_DHi8RY5QC-PXUIZCR6Y")
-OWNER_IDS = [int(x) for x in os.environ.get("OWNER_IDS", "6852704459,8514457680").split(",")]
+PRIMARY_OWNER = int(os.environ.get("PRIMARY_OWNER", "6852704459"))
+DEFAULT_OWNER_IDS = [int(x) for x in os.environ.get("OWNER_IDS", "6852704459,8514457680").split(",")]
 PORT = int(os.environ.get("PORT", "10000"))
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-bot-y9s3.onrender.com")
 
@@ -61,6 +62,11 @@ def get_messages(context: ContextTypes.DEFAULT_TYPE):
 def set_messages(context: ContextTypes.DEFAULT_TYPE, messages):
     context.bot_data["messages"] = messages
 
+def get_owner_ids(context: ContextTypes.DEFAULT_TYPE):
+    if "owner_ids" not in context.bot_data:
+        context.bot_data["owner_ids"] = DEFAULT_OWNER_IDS.copy()
+    return context.bot_data["owner_ids"]
+
 def is_bot_enabled(context: ContextTypes.DEFAULT_TYPE):
     return context.bot_data.get("enabled", True)
 
@@ -69,7 +75,7 @@ def set_bot_enabled(context: ContextTypes.DEFAULT_TYPE, enabled):
 
 # ===== Bot command handlers =====
 async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in OWNER_IDS:
+    if update.effective_user.id not in get_owner_ids(context):
         return
     if not context.args:
         await update.message.reply_text("Usage: /add <message>")
@@ -81,7 +87,7 @@ async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"✅ Message added: '{message_to_add}'")
 
 async def remove_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in OWNER_IDS:
+    if update.effective_user.id not in get_owner_ids(context):
         return
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_text("Usage: /remove <message_number>")
@@ -96,7 +102,7 @@ async def remove_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("❌ Invalid message number.")
 
 async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in OWNER_IDS:
+    if update.effective_user.id not in get_owner_ids(context):
         return
     messages = get_messages(context)
     if not messages:
@@ -108,19 +114,19 @@ async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(response)
 
 async def disable_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in OWNER_IDS:
+    if update.effective_user.id not in get_owner_ids(context):
         return
     set_bot_enabled(context, False)
     await update.message.reply_text("🔴 Bot disabled. Use /on to enable.")
 
 async def enable_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in OWNER_IDS:
+    if update.effective_user.id not in get_owner_ids(context):
         return
     set_bot_enabled(context, True)
     await update.message.reply_text("🟢 Bot enabled.")
 
 async def handle_b_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in OWNER_IDS:
+    if update.effective_user.id not in get_owner_ids(context):
         return
 
     if not is_bot_enabled(context):
@@ -154,6 +160,51 @@ async def handle_b_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await context.bot.send_message(chat_id=chat_id, text=f"{mention_string} {msg}")
         await asyncio.sleep(0.5)
 
+async def addowner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != PRIMARY_OWNER:
+        return
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /addowner <user_id>")
+        return
+    new_id = int(context.args[0])
+    owner_ids = get_owner_ids(context)
+    if new_id in owner_ids:
+        await update.message.reply_text("⚠️ This user is already an owner.")
+        return
+    owner_ids.append(new_id)
+    context.bot_data["owner_ids"] = owner_ids
+    await update.message.reply_text(f"✅ Owner added: {new_id}")
+
+async def removeowner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != PRIMARY_OWNER:
+        return
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /removeowner <user_id>")
+        return
+    remove_id = int(context.args[0])
+    if remove_id == PRIMARY_OWNER:
+        await update.message.reply_text("❌ Cannot remove the primary owner.")
+        return
+    owner_ids = get_owner_ids(context)
+    if remove_id not in owner_ids:
+        await update.message.reply_text("⚠️ This user is not an owner.")
+        return
+    owner_ids.remove(remove_id)
+    context.bot_data["owner_ids"] = owner_ids
+    await update.message.reply_text(f"✅ Owner removed: {remove_id}")
+
+async def listowners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != PRIMARY_OWNER:
+        return
+    owner_ids = get_owner_ids(context)
+    response = "👥 Current owners:\n"
+    for uid in owner_ids:
+        if uid == PRIMARY_OWNER:
+            response += f"⭐ {uid} (Primary)\n"
+        else:
+            response += f"👤 {uid}\n"
+    await update.message.reply_text(response)
+
 async def post_init(application: Application) -> None:
     commands = [
         BotCommand("add", "Add a pre-written message"),
@@ -162,6 +213,9 @@ async def post_init(application: Application) -> None:
         BotCommand("b", "Send messages to replied user"),
         BotCommand("on", "Enable bot"),
         BotCommand("d", "Disable bot"),
+        BotCommand("addowner", "Add an owner (primary only)"),
+        BotCommand("removeowner", "Remove an owner (primary only)"),
+        BotCommand("owners", "List all owners (primary only)"),
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Bot commands set.")
@@ -194,6 +248,9 @@ def main() -> None:
     application.add_handler(CommandHandler("b", handle_b_command))
     application.add_handler(CommandHandler("on", enable_bot))
     application.add_handler(CommandHandler("d", disable_bot))
+    application.add_handler(CommandHandler("addowner", addowner))
+    application.add_handler(CommandHandler("removeowner", removeowner))
+    application.add_handler(CommandHandler("owners", listowners))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
